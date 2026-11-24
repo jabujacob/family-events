@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Family Events</title>
+  <meta name="description" content="Our family's shared calendar, RSVPs and task lists.">
+  <meta name="theme-color" content="#d9643f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Family">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <header class="topbar">
+      <div class="brand"><img src="icon.svg" alt="" width="28" height="28"><span id="family-name">Family Events</span></div>
+      <div id="topbar-right"></div>
+    </header>
+    <div id="banner"></div>
+    <main id="view" tabindex="-1"><p class="loading">Loading…</p></main>
+    <button id="fab" class="fab" type="button" aria-label="Add" hidden>+</button>
+    <nav class="tabs" id="tabs" hidden>
+      <a href="#calendar" data-tab="calendar"><span class="ti" aria-hidden="true">📅</span>Calendar</a>
+      <a href="#upcoming" data-tab="upcoming"><span class="ti" aria-hidden="true">🎉</span>Upcoming</a>
+      <a href="#tasks" data-tab="tasks"><span class="ti" aria-hidden="true">✅</span>Tasks</a>
+      <a href="#family" data-tab="family"><span class="ti" aria-hidden="true">👪</span>Family</a>
+    </nav>
+  </div>
+  <div id="sheet-root"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
