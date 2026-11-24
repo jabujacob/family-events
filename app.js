@@ -813,7 +813,12 @@
     signin: async (f) => {
       const email = f.email.value.trim().toLowerCase();
       const btn = f.querySelector('button'); btn.disabled = true; btn.textContent = 'Sending…';
-      try { await store.signIn(email); state.sentTo = email; state.phase = 'sent'; render(); } catch (e) { fail(e); btn.disabled = false; btn.textContent = 'Email me a sign-in link'; }
+      try { await store.signIn(email); state.sentTo = email; state.phase = 'sent'; render(); } catch (e) {
+        // Supabase's free email service only sends a few emails per hour.
+        if (e && (e.status === 429 || /rate limit/i.test(e.message || ''))) toast('Too many sign-in emails were sent in the last hour. Please try again in about an hour.', true);
+        else fail(e);
+        btn.disabled = false; btn.textContent = 'Email me a sign-in link';
+      }
     },
     event: (f) => {
       const allDay = f.all_day.checked;
