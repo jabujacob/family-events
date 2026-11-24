@@ -94,6 +94,14 @@ $$;
 revoke execute on function public.claim_admin() from public, anon;
 grant execute on function public.claim_admin() to authenticated;
 
+-- ---------- Table access ----------
+-- New Supabase projects don't open tables to the app automatically.
+-- Only signed-in people get access, and the row rules below still decide what each person sees.
+
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on public.members, public.events, public.rsvps, public.tasks to authenticated;
+grant execute on function public.current_email(), public.is_member(), public.is_admin() to authenticated;
+
 -- ---------- Row level security ----------
 
 alter table public.members enable row level security;
