@@ -80,6 +80,27 @@ end $$;
 -- ---------- Shareable tasks (added later; safe to run on an existing database) ----------
 alter table public.tasks add column if not exists shared_with text[];
 
+-- ---------- Chores roster (added later; safe to run on an existing database) ----------
+-- Each chore rotates through `rotation` (a list of family emails): the first person does it in the
+-- week starting start_week (a Monday), the next person the week after, and so on.
+create table if not exists public.chores (
+  id          uuid primary key default gen_random_uuid(),
+  title       text not null check (char_length(title) between 1 and 100),
+  rotation    text[] not null check (cardinality(rotation) >= 1),
+  start_week  date not null,
+  notes       text check (char_length(notes) <= 300),
+  created_by  text not null default lower(coalesce(auth.jwt() ->> 'email', '')),
+  created_at  timestamptz not null default now()
+);
+
+create table if not exists public.chore_done (
+  chore_id uuid not null references public.chores(id) on delete cascade,
+  week     date not null,
+  done_by  text not null default lower(coalesce(auth.jwt() ->> 'email', '')),
+  done_at  timestamptz not null default now(),
+  primary key (chore_id, week)
+);
+
 create index if not exists events_start_idx on public.events (start_date);
 create index if not exists tasks_event_idx on public.tasks (event_id);
 
@@ -125,7 +146,7 @@ grant execute on function public.claim_admin() to authenticated;
 -- Only signed-in people get access, and the row rules below still decide what each person sees.
 
 grant usage on schema public to authenticated;
-grant select, insert, update, delete on public.members, public.events, public.rsvps, public.tasks to authenticated;
+grant select, insert, update, delete on public.members, public.events, public.rsvps, public.tasks, public.chores, public.chore_done to authenticated;
 grant execute on function public.current_email(), public.is_member(), public.is_admin() to authenticated;
 
 -- ---------- Row level security ----------
@@ -134,6 +155,8 @@ alter table public.members enable row level security;
 alter table public.events  enable row level security;
 alter table public.rsvps   enable row level security;
 alter table public.tasks   enable row level security;
+alter table public.chores  enable row level security;
+alter table public.chore_done enable row level security;
 
 drop policy if exists members_select on public.members;
 drop policy if exists members_insert on public.members;
@@ -201,3 +224,11 @@ create policy rsvps_select on public.rsvps for select to authenticated using (pu
 create policy rsvps_write on public.rsvps for all to authenticated
   using (public.is_member() and email = public.current_email())
   with check (public.is_member() and email = public.current_email());
+
+-- Chores: everyone in the family can see and manage the roster and tick chores off.
+drop policy if exists chores_all on public.chores;
+create policy chores_all on public.chores for all to authenticated
+  using (public.is_member()) with check (public.is_member());
+drop policy if exists chore_done_all on public.chore_done;
+create policy chore_done_all on public.chore_done for all to authenticated
+  using (public.is_member()) with check (public.is_member());
