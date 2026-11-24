@@ -49,12 +49,13 @@
 
   // ---------- Demo store (this browser only) ----------
   function makeDemoStore() {
-    const KEY = 'family-events-demo-v1';
+    const KEY = 'family-events-demo-v2';
     const ME = 'you@example.com';
     const seed = () => {
       const t = today();
       const sat = addDays(t, (6 - parse(t).getDay() + 7) % 7 || 7);
-      const e1 = uid(), e2 = uid(), e3 = uid();
+      const e1 = uid(), e2 = uid(), e3 = uid(), e4 = uid(), e5 = uid();
+      const sun = addDays(sat, 1);
       return {
         members: [
           { email: ME, name: 'You', color: COLORS[0], is_admin: true },
@@ -66,12 +67,15 @@
           { id: e1, title: 'Family BBQ', start_date: sat, end_date: null, start_time: '12:00', end_time: '16:00', location: "Nana's place", notes: 'Bring a plate and something to drink.', created_by: ME },
           { id: e2, title: "Nana's 80th birthday", start_date: addDays(t, 16), end_date: null, start_time: '18:30', end_time: null, location: 'The Boatshed Restaurant', notes: 'Surprise! Do not tell Nana.', created_by: 'aroha@example.com' },
           { id: e3, title: 'Beach bach weekend', start_date: addDays(t, 24), end_date: addDays(t, 26), start_time: null, end_time: null, location: 'Raglan', notes: '', created_by: 'sam@example.com' },
+          { id: e4, title: 'Sunday family dinner', start_date: sun, end_date: null, start_time: '17:30', end_time: null, location: 'Home', notes: 'Everyone welcome. Let us know if you are coming so we cook enough!', created_by: ME, repeat: 'weekly', repeat_until: null },
+          { id: e5, title: "Aroha's birthday", start_date: addDays(t, 40), end_date: null, start_time: null, end_time: null, location: null, notes: '', created_by: 'sam@example.com', repeat: 'yearly', repeat_until: null },
         ],
         rsvps: [
-          { event_id: e1, email: 'aroha@example.com', status: 'going', note: null },
-          { event_id: e1, email: 'sam@example.com', status: 'maybe', note: 'Might be late' },
-          { event_id: e2, email: 'aroha@example.com', status: 'going', note: null },
-          { event_id: e3, email: 'nana@example.com', status: 'no', note: null },
+          { event_id: e1, on_date: sat, email: 'aroha@example.com', status: 'going', note: null },
+          { event_id: e1, on_date: sat, email: 'sam@example.com', status: 'maybe', note: 'Might be late' },
+          { event_id: e2, on_date: addDays(t, 16), email: 'aroha@example.com', status: 'going', note: null },
+          { event_id: e3, on_date: addDays(t, 24), email: 'nana@example.com', status: 'no', note: null },
+          { event_id: e4, on_date: sun, email: 'nana@example.com', status: 'going', note: 'Bringing dessert' },
         ],
         tasks: [
           { id: uid(), title: 'Buy sausages and bread', event_id: e1, assigned_to: ME, due_date: addDays(sat, -1), done: false, created_by: ME },
@@ -100,9 +104,9 @@
       async loadAll() { return copy(db); },
       async saveEvent(ev) { const row = { ...ev, id: ev.id || uid() }; if (!ev.id) row.created_by = ME; upsert(db.events, row); save(); return copy(row); },
       async deleteEvent(id) { db.events = db.events.filter((e) => e.id !== id); db.rsvps = db.rsvps.filter((r) => r.event_id !== id); db.tasks = db.tasks.filter((t) => t.event_id !== id); save(); },
-      async setRsvp(event_id, status, note) {
-        const i = db.rsvps.findIndex((r) => r.event_id === event_id && r.email === ME);
-        if (!status) { if (i >= 0) db.rsvps.splice(i, 1); } else if (i >= 0) { db.rsvps[i] = { ...db.rsvps[i], status, note }; } else db.rsvps.push({ event_id, email: ME, status, note });
+      async setRsvp(event_id, on_date, status, note) {
+        const i = db.rsvps.findIndex((r) => r.event_id === event_id && r.email === ME && r.on_date === on_date);
+        if (!status) { if (i >= 0) db.rsvps.splice(i, 1); } else if (i >= 0) { db.rsvps[i] = { ...db.rsvps[i], status, note }; } else db.rsvps.push({ event_id, on_date, email: ME, status, note });
         save();
       },
       async saveTask(t) { const row = { ...t, id: t.id || uid() }; if (!t.id) { row.created_by = ME; row.done = !!t.done; } upsert(db.tasks, row); save(); return copy(row); },
@@ -127,7 +131,7 @@
     let session = null;
     const email = () => (session && session.user && session.user.email ? session.user.email.toLowerCase() : null);
     const ok = ({ data, error }) => { if (error) throw error; return data; };
-    const EVENT_FIELDS = ['id', 'title', 'start_date', 'end_date', 'start_time', 'end_time', 'location', 'notes'];
+    const EVENT_FIELDS = ['id', 'title', 'start_date', 'end_date', 'start_time', 'end_time', 'location', 'notes', 'repeat', 'repeat_until'];
     const TASK_FIELDS = ['id', 'title', 'event_id', 'assigned_to', 'due_date', 'done'];
     const pick = (o, keys) => Object.fromEntries(keys.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
 
@@ -167,9 +171,9 @@
         return ok(await sb.from('events').upsert(row).select().single());
       },
       async deleteEvent(id) { ok(await sb.from('events').delete().eq('id', id)); },
-      async setRsvp(event_id, status, note) {
-        if (!status) { ok(await sb.from('rsvps').delete().eq('event_id', event_id).eq('email', email())); return; }
-        ok(await sb.from('rsvps').upsert({ event_id, email: email(), status, note: note || null, updated_at: new Date().toISOString() }));
+      async setRsvp(event_id, on_date, status, note) {
+        if (!status) { ok(await sb.from('rsvps').delete().eq('event_id', event_id).eq('email', email()).eq('on_date', on_date)); return; }
+        ok(await sb.from('rsvps').upsert({ event_id, on_date, email: email(), status, note: note || null, updated_at: new Date().toISOString() }));
       },
       async saveTask(t) {
         const row = pick(t, TASK_FIELDS);
@@ -205,10 +209,132 @@
   const colorOf = (email) => (memberBy(email) || {}).color || COLORS[7];
   const nameOf = (email) => (memberBy(email) || {}).name || (email ? email.split('@')[0] : 'Someone');
   const avatar = (email, lg) => `<span class="avatar${lg ? ' lg' : ''}" style="background:${esc(colorOf(email))}" title="${esc(nameOf(email))}">${esc(initials(nameOf(email)))}</span>`;
-  const endOf = (e) => e.end_date || e.start_date;
   const sortEvents = (a, b) => a.start_date.localeCompare(b.start_date) || (a.start_time || '').localeCompare(b.start_time || '') || a.title.localeCompare(b.title);
-  const eventsOn = (iso) => state.events.filter((e) => e.start_date <= iso && iso <= endOf(e)).sort(sortEvents);
-  const myRsvp = (eventId) => state.rsvps.find((r) => r.event_id === eventId && r.email === state.me.email);
+
+  // ---- Repeating events ----
+  // An event is stored once. Each date it happens on is an "occurrence": a copy of the
+  // event with that date's start_date/end_date, plus `occ` (the date RSVPs are saved against).
+  const REPEAT = { none: "Doesn't repeat", weekly: 'Every week', fortnightly: 'Every 2 weeks', monthly: 'Every month', yearly: 'Every year' };
+  const daysBetween = (a, b) => Math.round((parse(b) - parse(a)) / 86400000);
+  const spanOf = (e) => (e.end_date ? Math.max(0, daysBetween(e.start_date, e.end_date)) : 0);
+  const repeats = (e) => !!e.repeat && e.repeat !== 'none';
+  function isStart(e, iso) {
+    if (iso < e.start_date) return false;
+    if (!repeats(e)) return iso === e.start_date;
+    if (e.repeat_until && iso > e.repeat_until) return false;
+    const d = parse(iso), s = parse(e.start_date);
+    switch (e.repeat) {
+      case 'weekly': return daysBetween(e.start_date, iso) % 7 === 0;
+      case 'fortnightly': return daysBetween(e.start_date, iso) % 14 === 0;
+      case 'monthly': return d.getDate() === s.getDate();
+      case 'yearly': return d.getDate() === s.getDate() && d.getMonth() === s.getMonth();
+      default: return false;
+    }
+  }
+  function occurrence(e, startIso) {
+    const span = spanOf(e);
+    return { ...e, start_date: startIso, end_date: span ? addDays(startIso, span) : null, occ: startIso };
+  }
+  function occurrenceOn(e, iso) {
+    for (let k = 0, span = spanOf(e); k <= span; k++) { const s0 = addDays(iso, -k); if (isStart(e, s0)) return occurrence(e, s0); }
+    return null;
+  }
+  // The occurrence happening on fromIso, or the next one after it.
+  function nextOccurrence(e, fromIso) {
+    const cur = occurrenceOn(e, fromIso);
+    if (cur) return cur;
+    if (!repeats(e)) return e.start_date > fromIso ? occurrence(e, e.start_date) : null;
+    let d = fromIso > e.start_date ? fromIso : e.start_date;
+    for (let i = 0; i < 800; i++) {
+      if (e.repeat_until && d > e.repeat_until) return null;
+      if (isStart(e, d)) return occurrence(e, d);
+      d = addDays(d, 1);
+    }
+    return null;
+  }
+  const endOf = (e) => e.end_date || e.start_date;
+  const eventsOn = (iso) => state.events.map((e) => occurrenceOn(e, iso)).filter(Boolean).sort(sortEvents);
+  const rsvpDate = (r) => r.on_date || (eventBy(r.event_id) || {}).start_date;
+  const rsvpsFor = (id, occ) => state.rsvps.filter((r) => r.event_id === id && rsvpDate(r) === occ);
+  const myRsvp = (id, occ) => rsvpsFor(id, occ).find((r) => r.email === state.me.email);
+  function repeatText(e) {
+    if (!repeats(e)) return '';
+    return REPEAT[e.repeat] + (e.repeat_until ? ` until ${fmtDate(e.repeat_until, { day: 'numeric', month: 'short', year: 'numeric' })}` : '');
+  }
+
+  // ---- Reminders: add to phone calendar (.ics) or Google Calendar ----
+  const compact = (iso) => iso.replace(/-/g, '');
+  const icsTime = (iso, t) => `${compact(iso)}T${hhmm(t).replace(':', '')}00`;
+  function plusHour(t) { const [h, m] = hhmm(t).split(':').map(Number); return `${pad(Math.min(23, h + 1))}:${pad(h >= 23 ? 59 : m)}`; }
+  function eventTimes(e) {
+    // Returns [start, end] in calendar format. All-day events end the day after (calendar convention).
+    if (!e.start_time) return { allDay: true, start: compact(e.start_date), end: compact(addDays(endOf(e), 1)) };
+    return { allDay: false, start: icsTime(e.start_date, e.start_time), end: icsTime(endOf(e), e.end_time || plusHour(e.start_time)) };
+  }
+  function rrule(e) {
+    if (!repeats(e)) return '';
+    const freq = { weekly: 'FREQ=WEEKLY', fortnightly: 'FREQ=WEEKLY;INTERVAL=2', monthly: 'FREQ=MONTHLY', yearly: 'FREQ=YEARLY' }[e.repeat];
+    return 'RRULE:' + freq + (e.repeat_until ? `;UNTIL=${compact(e.repeat_until)}${e.start_time ? 'T235959' : ''}` : '');
+  }
+  const icsText = (v) => String(v || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+  function buildIcs(e) {
+    const t = eventTimes(e);
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+    const url = location.origin + location.pathname;
+    const lines = [
+      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Family Events//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+      'BEGIN:VEVENT',
+      `UID:${e.id}@family-events`,
+      `DTSTAMP:${stamp}`,
+      t.allDay ? `DTSTART;VALUE=DATE:${t.start}` : `DTSTART:${t.start}`,
+      t.allDay ? `DTEND;VALUE=DATE:${t.end}` : `DTEND:${t.end}`,
+      rrule(e),
+      `SUMMARY:${icsText(e.title)}`,
+      e.location ? `LOCATION:${icsText(e.location)}` : '',
+      `DESCRIPTION:${icsText([e.notes, `RSVP: ${url}`].filter(Boolean).join('\n\n'))}`,
+      `URL:${url}`,
+      'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${icsText(e.title)}`, t.allDay ? 'TRIGGER:-PT15H' : 'TRIGGER:-P1D', 'END:VALARM',
+      t.allDay ? '' : ['BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${icsText(e.title)}`, 'TRIGGER:-PT2H', 'END:VALARM'].join('\r\n'),
+      'END:VEVENT', 'END:VCALENDAR',
+    ];
+    return lines.filter(Boolean).join('\r\n') + '\r\n';
+  }
+  function downloadIcs(e) {
+    if (!e) return;
+    const blob = new Blob([buildIcs(e)], { type: 'text/calendar;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${e.title.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-').slice(0, 40) || 'event'}.ics`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    toast('Open the downloaded file to add it to your calendar');
+  }
+  function googleCalendarUrl(e) {
+    const t = eventTimes(e);
+    const q = new URLSearchParams({ action: 'TEMPLATE', text: e.title, dates: `${t.start}/${t.end}`, details: [e.notes, `RSVP: ${location.origin + location.pathname}`].filter(Boolean).join('\n\n') });
+    if (e.location) q.set('location', e.location);
+    if (repeats(e)) q.set('recur', rrule(e));
+    try { q.set('ctz', Intl.DateTimeFormat().resolvedOptions().timeZone); } catch (err) { /* older browsers */ }
+    return `https://calendar.google.com/calendar/render?${q.toString()}`;
+  }
+
+  // ---- In-app reminders: what's on today/tomorrow and my tasks due soon ----
+  function remindersCard() {
+    const t = today(), tm = addDays(t, 1);
+    const evs = [...eventsOn(t).map((e) => ({ e, when: 'Today' })), ...eventsOn(tm).filter((e) => e.start_date === tm).map((e) => ({ e, when: 'Tomorrow' }))];
+    const tasks = state.tasks.filter((x) => !x.done && x.due_date && x.due_date <= tm && (x.assigned_to === state.me.email || !x.assigned_to))
+      .sort((a, b) => a.due_date.localeCompare(b.due_date));
+    if (!evs.length && !tasks.length) return '';
+    const evRows = evs.map(({ e, when }) => {
+      const mine = myRsvp(e.id, e.occ);
+      return `<button class="rem" data-act="open-event" data-id="${esc(e.id)}" data-occ="${esc(e.occ)}">
+        <span class="rem-when">${when}</span><span class="rem-what">${esc(e.title)}${e.start_time && e.start_date === (when === 'Today' ? t : tm) ? ` · ${esc(fmtTime(e.start_time))}` : ''}</span>
+        ${mine ? `<span class="pill ${mine.status}">${esc(STATUS[mine.status].label)}</span>` : '<span class="pill warn">Reply</span>'}</button>`;
+    }).join('');
+    const taskRows = tasks.map((x) => `<button class="rem" data-act="edit-task" data-id="${esc(x.id)}">
+        <span class="rem-when ${x.due_date < t ? 'overdue' : ''}">${x.due_date < t ? 'Overdue' : x.due_date === t ? 'Due today' : 'Due tomorrow'}</span><span class="rem-what">${esc(x.title)}</span></button>`).join('');
+    return `<div class="reminders card"><div class="rem-head">🔔 Coming up</div>${evRows}${taskRows}</div>`;
+  }
 
   function whenText(e) {
     const multi = e.end_date && e.end_date !== e.start_date;
@@ -329,6 +455,7 @@
     const dayEvents = eventsOn(state.selected);
     const monthName = first.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
     return `
+      ${remindersCard()}
       <div class="cal-head">
         <h2>${esc(monthName)}</h2>
         <div class="cal-nav">
@@ -345,19 +472,20 @@
   }
 
   function rsvpPills(e) {
-    const rs = state.rsvps.filter((r) => r.event_id === e.id);
+    const rs = rsvpsFor(e.id, e.occ);
     const count = (s) => rs.filter((r) => r.status === s).length;
-    const mine = myRsvp(e.id);
+    const mine = myRsvp(e.id, e.occ);
     let out = mine ? `<span class="pill ${mine.status}">You: ${esc(STATUS[mine.status].label)}</span>` : '<span class="pill warn">Reply needed</span>';
     if (count('going')) out += `<span class="pill">${count('going')} going</span>`;
     if (count('maybe')) out += `<span class="pill">${count('maybe')} maybe</span>`;
     const open = state.tasks.filter((t) => t.event_id === e.id && !t.done).length;
     if (open) out += `<span class="pill">${open} task${open > 1 ? 's' : ''} to do</span>`;
+    if (repeats(e)) out += `<span class="pill" title="${esc(repeatText(e))}">🔁 ${esc(REPEAT[e.repeat])}</span>`;
     return out;
   }
 
   function eventCard(e) {
-    return `<button class="ev" data-act="open-event" data-id="${esc(e.id)}">
+    return `<button class="ev" data-act="open-event" data-id="${esc(e.id)}" data-occ="${esc(e.occ)}">
       <span class="bar" style="background:${esc(colorOf(e.created_by))}"></span>
       <span class="ev-body">
         <span class="ev-title">${esc(e.title)}</span><br>
@@ -369,8 +497,8 @@
 
   function upcomingView() {
     const t = today();
-    const list = state.events.filter((e) => endOf(e) >= t).sort(sortEvents);
-    const needReply = list.filter((e) => !myRsvp(e.id)).length;
+    const list = state.events.map((e) => nextOccurrence(e, t)).filter(Boolean).sort(sortEvents);
+    const needReply = list.filter((e) => !myRsvp(e.id, e.occ)).length;
     if (!list.length) return `<h2>Upcoming</h2><div class="empty"><span class="big">🎈</span>No upcoming events yet.<br><button class="btn primary small" style="margin-top:12px" data-act="new-event">Plan something</button></div>`;
     let lastMonth = '';
     const items = list.map((e) => {
@@ -378,7 +506,7 @@
       const head = mo !== lastMonth ? `<h3>${esc(mo)}</h3>` : '';
       lastMonth = mo;
       const d = parse(e.start_date);
-      return `${head}<button class="ev" data-act="open-event" data-id="${esc(e.id)}">
+      return `${head}<button class="ev" data-act="open-event" data-id="${esc(e.id)}" data-occ="${esc(e.occ)}">
         <span class="datebadge"><small>${esc(d.toLocaleDateString(undefined, { weekday: 'short' }))}</small><b>${d.getDate()}</b></span>
         <span class="ev-body">
           <span class="ev-title">${esc(e.title)}</span><br>
@@ -508,12 +636,18 @@
   }
   const sheetHead = (title) => `<div class="sheet-head"><h2>${esc(title)}</h2><button class="iconbtn" data-act="close" aria-label="Close">✕</button></div>`;
 
-  function openEvent(id) {
+  function openEvent(id, occ) {
     openSheet(() => {
-      const e = eventBy(id);
-      if (!e) return null;
-      const mine = myRsvp(id);
-      const rs = state.rsvps.filter((r) => r.event_id === id);
+      const series = eventBy(id);
+      if (!series) return null;
+      // Show the date that was tapped; fall back to the next date if the event has changed.
+      if (!occ || !isStart(series, occ)) {
+        const next = nextOccurrence(series, today()) || occurrence(series, series.start_date);
+        occ = next.occ;
+      }
+      const e = occurrence(series, occ);
+      const mine = myRsvp(id, occ);
+      const rs = rsvpsFor(id, occ);
       const group = (s) => rs.filter((r) => r.status === s);
       const replied = new Set(rs.map((r) => r.email));
       const noReply = state.members.filter((m) => !replied.has(m.email));
@@ -523,14 +657,15 @@
       const maps = e.location ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(e.location)}` : '';
       return `${sheetHead(e.title)}
         <div class="detail-line"><span class="i">🗓️</span><span>${esc(whenText(e))}</span></div>
+        ${repeats(e) ? `<div class="detail-line"><span class="i">🔁</span><span>${esc(repeatText(e))}</span></div>` : ''}
         ${e.location ? `<div class="detail-line"><span class="i">📍</span><a href="${maps}" target="_blank" rel="noopener">${esc(e.location)}</a></div>` : ''}
         <div class="detail-line"><span class="i">✍️</span><span>Added by ${esc(nameOf(e.created_by))}</span></div>
         ${e.notes ? `<div class="notes">${esc(e.notes)}</div>` : ''}
 
-        <h3>Are you coming?</h3>
+        <h3>Are you coming${repeats(e) ? ` on ${esc(fmtDate(occ, { weekday: 'long', day: 'numeric', month: 'short' }))}` : ''}?</h3>
         <div class="rsvp">${Object.entries(STATUS).map(([k, s]) =>
-          `<button class="${k}${mine && mine.status === k ? ' on' : ''}" data-act="rsvp" data-id="${esc(id)}" data-status="${k}" aria-pressed="${mine && mine.status === k}"><span class="e">${s.emoji}</span>${esc(s.label)}</button>`).join('')}</div>
-        ${mine ? `<form class="quickadd" data-form="rsvp-note" data-id="${esc(id)}" style="margin-top:10px">
+          `<button class="${k}${mine && mine.status === k ? ' on' : ''}" data-act="rsvp" data-id="${esc(id)}" data-occ="${esc(occ)}" data-status="${k}" aria-pressed="${mine && mine.status === k}"><span class="e">${s.emoji}</span>${esc(s.label)}</button>`).join('')}</div>
+        ${mine ? `<form class="quickadd" data-form="rsvp-note" data-id="${esc(id)}" data-occ="${esc(occ)}" style="margin-top:10px">
           <input type="text" name="note" maxlength="300" placeholder="Add a note (optional), e.g. “Bringing dessert”" value="${esc(mine.note || '')}" aria-label="RSVP note">
           <button class="btn" type="submit">Save</button></form>` : ''}
 
@@ -542,6 +677,13 @@
           ${noReply.length ? `<div class="who-row"><span class="lbl">⏳ No reply</span><div class="people">${noReply.map((m) => `<span class="person">${avatar(m.email)}${esc(m.name)}</span>`).join('')}</div></div>` : ''}
         </div>
 
+        <h3>Reminders</h3>
+        <p class="ev-meta" style="margin:0 0 8px">Add it to your phone's calendar to get an alert ${e.start_time ? 'the day before and 2 hours before' : 'at 9am the day before'}.${repeats(e) ? ' Every date is added.' : ''}</p>
+        <div class="sheet-actions" style="margin-top:0">
+          <button class="btn" data-act="add-calendar" data-id="${esc(id)}">📅 Add to my calendar</button>
+          <a class="btn" href="${esc(googleCalendarUrl(series))}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;display:inline-flex;align-items:center">Google Calendar</a>
+        </div>
+
         <h3>Tasks for this event</h3>
         <form class="quickadd" data-form="event-task" data-id="${esc(id)}">
           <input type="text" name="title" placeholder="e.g. Bring chairs" maxlength="300" aria-label="New task for this event">
@@ -551,7 +693,7 @@
 
         <div class="sheet-actions">
           <button class="btn" data-act="edit-event" data-id="${esc(id)}">Edit</button>
-          <button class="btn" data-act="copy-event" data-id="${esc(id)}">Share</button>
+          <button class="btn" data-act="copy-event" data-id="${esc(id)}" data-occ="${esc(occ)}">Share</button>
           <span class="spacer"></span>
           <button class="btn danger" data-act="delete-event" data-id="${esc(id)}">Delete</button>
         </div>`;
@@ -559,7 +701,8 @@
   }
 
   function openEventForm(id, date) {
-    const e = id ? eventBy(id) : { title: '', start_date: date || state.selected || today(), end_date: null, start_time: '', end_time: '', location: '', notes: '' };
+    const e = id ? eventBy(id) : { title: '', start_date: date || state.selected || today(), end_date: null, start_time: '', end_time: '', location: '', notes: '', repeat: 'none', repeat_until: null };
+    const rep = e.repeat || 'none';
     const allDay = id ? !e.start_time : false;
     openSheet(() => `${sheetHead(id ? 'Edit event' : 'New event')}
       <form data-form="event" data-id="${esc(id || '')}">
@@ -573,19 +716,26 @@
           <label class="field"><span>Starts</span><input type="time" name="start_time" value="${esc(hhmm(e.start_time) || (id ? '' : '12:00'))}"></label>
           <label class="field"><span>Ends (optional)</span><input type="time" name="end_time" value="${esc(hhmm(e.end_time))}"></label>
         </div>
+        <div class="row">
+          <label class="field"><span>Repeats</span><select name="repeat">${Object.entries(REPEAT).map(([k, l]) => `<option value="${k}" ${k === rep ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+          <label class="field" data-until ${rep === 'none' ? 'hidden' : ''}><span>Until (optional)</span><input type="date" name="repeat_until" value="${esc(e.repeat_until || '')}"></label>
+        </div>
+        ${id && rep !== 'none' ? '<p class="ev-meta" style="margin:-4px 0 12px">Changes apply to every date of this repeating event.</p>' : ''}
         <label class="field"><span>Where (optional)</span><input type="text" name="location" maxlength="300" value="${esc(e.location || '')}" placeholder="Address or place"></label>
         <label class="field"><span>Notes (optional)</span><textarea name="notes" maxlength="5000" placeholder="What to bring, parking, dress code…">${esc(e.notes || '')}</textarea></label>
         <div class="sheet-actions"><button class="btn primary" type="submit">${id ? 'Save changes' : 'Add event'}</button><button class="btn" type="button" data-act="${id ? 'open-event' : 'close'}" data-id="${esc(id || '')}">Cancel</button></div>
       </form>`, (root) => {
       const cb = root.querySelector('[name=all_day]');
       cb.addEventListener('change', () => { root.querySelector('[data-times]').hidden = cb.checked; });
+      const rs = root.querySelector('[name=repeat]');
+      rs.addEventListener('change', () => { root.querySelector('[data-until]').hidden = rs.value === 'none'; });
     });
   }
 
   function openTaskForm(id, preset) {
     const t = id ? state.tasks.find((x) => x.id === id) : { title: '', assigned_to: null, due_date: null, event_id: null, ...preset };
     if (!t) return;
-    const upcoming = state.events.filter((e) => endOf(e) >= today() || e.id === t.event_id).sort(sortEvents);
+    const upcoming = state.events.map((e) => nextOccurrence(e, today()) || (e.id === t.event_id ? occurrence(e, e.start_date) : null)).filter(Boolean).sort(sortEvents);
     openSheet(() => `${sheetHead(id ? 'Edit task' : 'New task')}
       <form data-form="task" data-id="${esc(id || '')}">
         <label class="field"><span>Task</span><input type="text" name="title" required maxlength="300" value="${esc(t.title)}" placeholder="e.g. Pick up Nana" autofocus></label>
@@ -610,28 +760,34 @@
     'pick-day': (el) => { state.selected = el.dataset.date; if (state.selected.slice(0, 8) + '01' !== state.month) state.month = state.selected.slice(0, 8) + '01'; render(); },
     month: (el) => { const d = parse(state.month); d.setMonth(d.getMonth() + Number(el.dataset.dir)); state.month = toISO(d); render(); },
     today: () => { state.selected = today(); state.month = today().slice(0, 8) + '01'; render(); },
-    'open-event': (el) => openEvent(el.dataset.id),
+    'open-event': (el) => openEvent(el.dataset.id, el.dataset.occ),
     'new-event': (el) => openEventForm(null, el.dataset.date),
     'edit-event': (el) => openEventForm(el.dataset.id),
     'delete-event': async (el) => {
       const e = eventBy(el.dataset.id);
-      if (!e || !(await askConfirm(`Delete “${e.title}”? Its RSVPs and tasks will be deleted too.`, 'Delete event'))) return;
+      if (!e) return;
+      const msg = repeats(e)
+        ? `Delete “${e.title}”? This repeats ${REPEAT[e.repeat].toLowerCase()}, and every date will be deleted, with all RSVPs and tasks.`
+        : `Delete “${e.title}”? Its RSVPs and tasks will be deleted too.`;
+      if (!(await askConfirm(msg, 'Delete event'))) return;
       run(() => store.deleteEvent(e.id), 'Event deleted');
     },
     'copy-event': async (el) => {
-      const e = eventBy(el.dataset.id);
-      const text = `${e.title}\n${whenText(e)}${e.location ? `\n${e.location}` : ''}\nRSVP here: ${location.origin + location.pathname}`;
+      const series = eventBy(el.dataset.id);
+      const e = el.dataset.occ ? occurrence(series, el.dataset.occ) : series;
+      const text = `${e.title}\n${whenText(e)}${repeats(e) ? `\n${repeatText(e)}` : ''}${e.location ? `\n${e.location}` : ''}\nRSVP here: ${location.origin + location.pathname}`;
       try {
         if (navigator.share) { await navigator.share({ title: e.title, text }); return; }
       } catch (err) { if (err && err.name === 'AbortError') return; }
       try { await navigator.clipboard.writeText(text); toast('Copied. Paste it into a message to the family.'); }
       catch (err) { toast('Could not copy automatically on this device.', true); }
     },
+    'add-calendar': (el) => downloadIcs(eventBy(el.dataset.id)),
     rsvp: (el) => {
-      const id = el.dataset.id, status = el.dataset.status;
-      const mine = myRsvp(id);
+      const id = el.dataset.id, occ = el.dataset.occ, status = el.dataset.status;
+      const mine = myRsvp(id, occ);
       const next = mine && mine.status === status ? null : status;
-      run(() => store.setRsvp(id, next, mine ? mine.note : null), next ? `RSVP saved: ${STATUS[next].label}` : 'RSVP cleared');
+      run(() => store.setRsvp(id, occ, next, mine ? mine.note : null), next ? `RSVP saved: ${STATUS[next].label}` : 'RSVP cleared');
     },
     'toggle-task': (el) => {
       const t = state.tasks.find((x) => x.id === el.dataset.id);
@@ -670,8 +826,11 @@
         end_time: allDay ? null : clean(f.end_time.value),
         location: clean(f.location.value),
         notes: clean(f.notes.value),
+        repeat: f.repeat.value,
+        repeat_until: f.repeat.value === 'none' ? null : clean(f.repeat_until.value),
       };
       if (!ev.title) return toast('Please give the event a name', true);
+      if (ev.repeat_until && ev.repeat_until < ev.start_date) return toast('The "until" date is before the first date', true);
       if (ev.end_date && ev.end_date < ev.start_date) return toast('The end date is before the start date', true);
       if (ev.end_date === ev.start_date) ev.end_date = null;
       if (!ev.start_time) ev.end_time = null;
@@ -680,7 +839,7 @@
         state.selected = saved.start_date;
         state.month = saved.start_date.slice(0, 8) + '01';
         await refresh();
-        openEvent(saved.id);
+        openEvent(saved.id, saved.start_date);
       }, ev.id ? 'Event updated' : 'Event added');
     },
     task: (f) => {
@@ -707,8 +866,8 @@
       run(() => store.saveTask({ title, event_id: f.dataset.id, assigned_to: null, due_date: null, done: false }), 'Task added');
     },
     'rsvp-note': (f) => {
-      const mine = myRsvp(f.dataset.id);
-      if (mine) run(() => store.setRsvp(f.dataset.id, mine.status, clean(f.note.value)), 'Note saved');
+      const mine = myRsvp(f.dataset.id, f.dataset.occ);
+      if (mine) run(() => store.setRsvp(f.dataset.id, f.dataset.occ, mine.status, clean(f.note.value)), 'Note saved');
     },
     'add-member': (f) => {
       const email = f.email.value.trim().toLowerCase();

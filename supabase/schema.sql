@@ -36,11 +36,12 @@ create table if not exists public.events (
 
 create table if not exists public.rsvps (
   event_id   uuid not null references public.events(id) on delete cascade,
+  on_date    date not null,  -- which date of the event (matters for repeating events)
   email      text not null references public.members(email) on delete cascade,
   status     text not null check (status in ('going', 'maybe', 'no')),
   note       text check (char_length(note) <= 300),
   updated_at timestamptz not null default now(),
-  primary key (event_id, email)
+  primary key (event_id, email, on_date)
 );
 
 create table if not exists public.tasks (
@@ -53,6 +54,28 @@ create table if not exists public.tasks (
   created_by  text not null default lower(coalesce(auth.jwt() ->> 'email', '')),
   created_at  timestamptz not null default now()
 );
+
+-- ---------- Repeating events (added later; safe to run on an existing database) ----------
+
+alter table public.events add column if not exists repeat text not null default 'none';
+alter table public.events add column if not exists repeat_until date;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'events_repeat_check') then
+    alter table public.events add constraint events_repeat_check
+      check (repeat in ('none', 'weekly', 'fortnightly', 'monthly', 'yearly'));
+  end if;
+end $$;
+
+-- RSVPs are now per date, so people can say yes to one Sunday dinner and no to the next.
+alter table public.rsvps add column if not exists on_date date;
+update public.rsvps r set on_date = e.start_date from public.events e where r.event_id = e.id and r.on_date is null;
+alter table public.rsvps alter column on_date set not null;
+do $$ begin
+  if (select array_length(conkey, 1) from pg_constraint where conname = 'rsvps_pkey') = 2 then
+    alter table public.rsvps drop constraint rsvps_pkey;
+    alter table public.rsvps add primary key (event_id, email, on_date);
+  end if;
+end $$;
 
 create index if not exists events_start_idx on public.events (start_date);
 create index if not exists tasks_event_idx on public.tasks (event_id);

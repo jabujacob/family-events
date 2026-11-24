@@ -6,6 +6,8 @@ open the link on any phone, tablet or computer, and add it to your home screen.
 - **Calendar**: month view, tap a day to see what's on.
 - **Upcoming**: everything coming up, with a reminder of which events still need your reply.
 - **RSVPs**: Going / Maybe / Can't go on every event, with an optional note ("bringing dessert"), plus who hasn't replied yet.
+- **Repeating events**: every week, every 2 weeks, every month or every year, with an optional end date. People RSVP to each date separately.
+- **Reminders**: "Add to my calendar" puts an event (and all its repeats) on your phone's calendar with alerts the day before and 2 hours before. A "Coming up" box on the calendar shows what's on today and tomorrow, and your tasks due soon.
 - **Tasks**: general to-dos or tasks for an event, assign them to someone, add a due date, tick them off.
 - **Family**: the admin adds family members by email. Only people on the list can see anything.
 

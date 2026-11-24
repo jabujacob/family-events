@@ -257,6 +257,18 @@ input:focus, select:focus, textarea:focus, .btn:focus-visible, .iconbtn:focus-vi
 .signin h1 { margin: 12px 0 4px; }
 .signin p { color: var(--muted); }
 
+/* Reminders */
+.reminders { padding: 6px; margin-bottom: 14px; display: flex; flex-direction: column; }
+.rem-head { font-weight: 700; padding: 6px 8px 4px; }
+.rem {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 0; background: transparent;
+  padding: 8px; border-radius: 10px; cursor: pointer; min-height: 44px;
+}
+.rem:hover { background: var(--surface-2); }
+.rem-when { flex: 0 0 auto; font-size: .78rem; font-weight: 700; color: var(--accent); min-width: 86px; }
+.rem-when.overdue { color: var(--no); }
+.rem-what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
 /* Bottom tabs */
 .tabs {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
