@@ -7,7 +7,7 @@
 // project (Project Settings -> API). The "anon" key is safe to publish:
 // the database rules in supabase/schema.sql keep the data private.
 window.APP_CONFIG = {
-  familyName: "Our Family",
-  supabaseUrl: "",
-  supabaseAnonKey: ""
+  familyName: "Mathew Family",
+  supabaseUrl: "https://qgrwqbrsmfglbtmqqqax.supabase.co",
+  supabaseAnonKey: "sb_publishable_m12DT8Cw_Xw8Tg7DF3x1bQ_rkcl9Dvo"
 };
