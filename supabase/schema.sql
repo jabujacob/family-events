@@ -36,11 +36,12 @@ create table if not exists public.events (
 
 create table if not exists public.rsvps (
   event_id   uuid not null references public.events(id) on delete cascade,
+  on_date    date not null,  -- which date of the event (matters for repeating events)
   email      text not null references public.members(email) on delete cascade,
   status     text not null check (status in ('going', 'maybe', 'no')),
   note       text check (char_length(note) <= 300),
   updated_at timestamptz not null default now(),
-  primary key (event_id, email)
+  primary key (event_id, email, on_date)
 );
 
 create table if not exists public.tasks (
@@ -53,6 +54,31 @@ create table if not exists public.tasks (
   created_by  text not null default lower(coalesce(auth.jwt() ->> 'email', '')),
   created_at  timestamptz not null default now()
 );
+
+-- ---------- Repeating events (added later; safe to run on an existing database) ----------
+
+alter table public.events add column if not exists repeat text not null default 'none';
+alter table public.events add column if not exists repeat_until date;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'events_repeat_check') then
+    alter table public.events add constraint events_repeat_check
+      check (repeat in ('none', 'weekly', 'fortnightly', 'monthly', 'yearly'));
+  end if;
+end $$;
+
+-- RSVPs are now per date, so people can say yes to one Sunday dinner and no to the next.
+alter table public.rsvps add column if not exists on_date date;
+update public.rsvps r set on_date = e.start_date from public.events e where r.event_id = e.id and r.on_date is null;
+alter table public.rsvps alter column on_date set not null;
+do $$ begin
+  if (select array_length(conkey, 1) from pg_constraint where conname = 'rsvps_pkey') = 2 then
+    alter table public.rsvps drop constraint rsvps_pkey;
+    alter table public.rsvps add primary key (event_id, email, on_date);
+  end if;
+end $$;
+
+-- ---------- Shareable tasks (added later; safe to run on an existing database) ----------
+alter table public.tasks add column if not exists shared_with text[];
 
 create index if not exists events_start_idx on public.events (start_date);
 create index if not exists tasks_event_idx on public.tasks (event_id);
@@ -127,9 +153,47 @@ drop policy if exists events_all on public.events;
 create policy events_all on public.events for all to authenticated
   using (public.is_member()) with check (public.is_member());
 
+-- Tasks can be for everyone (shared_with is null), private (empty list),
+-- or shared with chosen people. The creator and the person doing it can always see it.
+create or replace function public.can_see_task(t public.tasks) returns boolean
+language sql stable as $$
+  select public.is_member() and (
+    t.shared_with is null
+    or t.created_by = public.current_email()
+    or t.assigned_to = public.current_email()
+    or public.current_email() = any (t.shared_with)
+  )
+$$;
+grant execute on function public.can_see_task(public.tasks) to authenticated;
+
 drop policy if exists tasks_all on public.tasks;
-create policy tasks_all on public.tasks for all to authenticated
-  using (public.is_member()) with check (public.is_member());
+drop policy if exists tasks_select on public.tasks;
+drop policy if exists tasks_insert on public.tasks;
+drop policy if exists tasks_update on public.tasks;
+drop policy if exists tasks_delete on public.tasks;
+create policy tasks_select on public.tasks for select to authenticated using (public.can_see_task(tasks));
+create policy tasks_insert on public.tasks for insert to authenticated
+  with check (public.is_member() and created_by = public.current_email());
+create policy tasks_update on public.tasks for update to authenticated
+  using (public.can_see_task(tasks)) with check (public.is_member());
+create policy tasks_delete on public.tasks for delete to authenticated using (public.can_see_task(tasks));
+
+-- Only the person who created a task can change who sees it.
+create or replace function public.protect_task_sharing() returns trigger
+language plpgsql as $$
+begin
+  if new.created_by is distinct from old.created_by then
+    raise exception 'The creator of a task cannot be changed';
+  end if;
+  if new.shared_with is distinct from old.shared_with and old.created_by <> public.current_email() then
+    raise exception 'Only the person who created this task can change who sees it';
+  end if;
+  return new;
+end
+$$;
+drop trigger if exists tasks_protect_sharing on public.tasks;
+create trigger tasks_protect_sharing before update on public.tasks
+  for each row execute function public.protect_task_sharing();
 
 drop policy if exists rsvps_select on public.rsvps;
 drop policy if exists rsvps_write on public.rsvps;
