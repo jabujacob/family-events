@@ -33,6 +33,7 @@
     : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
   const initials = (name) => (name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
   const clean = (s) => { const v = String(s ?? '').trim(); return v === '' ? null : v; };
+  const mondayOf = (iso) => addDays(iso, -((parse(iso).getDay() + 6) % 7));
   // Who can see a task: everyone (shared_with empty/null = null), or only the creator, the person
   // it's assigned to and the people in shared_with. The database applies the same rule.
   const canSee = (t, email) => t.shared_with == null || t.created_by === email || t.assigned_to === email || t.shared_with.includes(email);
@@ -59,6 +60,7 @@
       const sat = addDays(t, (6 - parse(t).getDay() + 7) % 7 || 7);
       const e1 = uid(), e2 = uid(), e3 = uid(), e4 = uid(), e5 = uid();
       const sun = addDays(sat, 1);
+      const c1 = uid();
       return {
         members: [
           { email: ME, name: 'You', color: COLORS[0], is_admin: true },
@@ -90,11 +92,18 @@
           { id: uid(), title: 'Fix the garden gate', event_id: null, assigned_to: 'sam@example.com', due_date: null, done: false, created_by: 'aroha@example.com', shared_with: null },
           { id: uid(), title: "Aroha's surprise party plans", event_id: null, assigned_to: null, due_date: null, done: false, created_by: 'sam@example.com', shared_with: ['nana@example.com'] },
         ],
+        chores: [
+          { id: c1, title: 'Take out the bins', rotation: [ME, 'aroha@example.com', 'sam@example.com', 'nana@example.com'], start_week: mondayOf(t), notes: 'Bins go out Thursday night.', created_by: ME },
+          { id: uid(), title: 'Wash the dishes', rotation: ['aroha@example.com', 'sam@example.com', ME], start_week: mondayOf(t), notes: '', created_by: ME },
+          { id: uid(), title: 'Vacuum the lounge', rotation: ['sam@example.com', ME, 'aroha@example.com'], start_week: mondayOf(t), notes: '', created_by: 'aroha@example.com' },
+        ],
+        chore_done: [],
       };
     };
     let db;
     try { db = JSON.parse(localStorage.getItem(KEY)); } catch (e) { db = null; }
     if (!db || !db.members) db = seed();
+    if (!db.chores) { const fresh = seed(); db.chores = fresh.chores; db.chore_done = []; }
     const save = () => { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { /* private mode */ } };
     save();
     const copy = (x) => JSON.parse(JSON.stringify(x));
@@ -117,6 +126,13 @@
       },
       async saveTask(t) { const row = { ...t, id: t.id || uid() }; if (!t.id) { row.created_by = ME; row.done = !!t.done; } upsert(db.tasks, row); save(); return copy(row); },
       async deleteTask(id) { db.tasks = db.tasks.filter((t) => t.id !== id); save(); },
+      async saveChore(c) { db.chores = db.chores || []; const row = { ...c, id: c.id || uid() }; if (!c.id) row.created_by = ME; upsert(db.chores, row); save(); },
+      async deleteChore(id) { db.chores = db.chores.filter((c) => c.id !== id); db.chore_done = db.chore_done.filter((d) => d.chore_id !== id); save(); },
+      async setChoreDone(chore_id, week, done) {
+        db.chore_done = (db.chore_done || []).filter((d) => !(d.chore_id === chore_id && d.week === week));
+        if (done) db.chore_done.push({ chore_id, week, done_by: ME });
+        save();
+      },
       async addMember(m) {
         if (db.members.some((x) => x.email === m.email)) throw new Error('That email is already on the family list.');
         db.members.push({ ...m, is_admin: false }); save();
@@ -169,7 +185,12 @@
           sb.from('rsvps').select('*'),
           sb.from('tasks').select('*').order('created_at'),
         ].map((q) => q.then(ok)));
-        return { members, events, rsvps, tasks };
+        // Chores were added later: if the database hasn't been updated yet, the rest of the app still works.
+        let chores = [], chore_done = [], choresMissing = false;
+        try {
+          [chores, chore_done] = await Promise.all([sb.from('chores').select('*').order('title'), sb.from('chore_done').select('*')].map((q) => q.then(ok)));
+        } catch (e) { choresMissing = true; }
+        return { members, events, rsvps, tasks, chores, chore_done, choresMissing };
       },
       async saveEvent(ev) {
         const row = pick(ev, EVENT_FIELDS);
@@ -187,6 +208,16 @@
         return ok(await sb.from('tasks').upsert(row).select().single());
       },
       async deleteTask(id) { ok(await sb.from('tasks').delete().eq('id', id)); },
+      async saveChore(c) {
+        const row = { title: c.title, rotation: c.rotation, start_week: c.start_week, notes: c.notes };
+        if (c.id) row.id = c.id;
+        ok(await sb.from('chores').upsert(row));
+      },
+      async deleteChore(id) { ok(await sb.from('chores').delete().eq('id', id)); },
+      async setChoreDone(chore_id, week, done) {
+        if (done) ok(await sb.from('chore_done').upsert({ chore_id, week, done_by: email(), done_at: new Date().toISOString() }));
+        else ok(await sb.from('chore_done').delete().eq('chore_id', chore_id).eq('week', week));
+      },
       async addMember(m) {
         const { error } = await sb.from('members').insert({ email: m.email, name: m.name, color: m.color });
         if (error && error.code === '23505') throw new Error('That email is already on the family list.');
@@ -201,7 +232,8 @@
   const state = {
     phase: 'loading', // loading | signin | sent | notmember | ready
     me: null,
-    members: [], events: [], rsvps: [], tasks: [],
+    members: [], events: [], rsvps: [], tasks: [], chores: [], chore_done: [], choresMissing: false,
+    week: null, // Monday of the week shown on the Chores tab
     month: today().slice(0, 8) + '01',
     selected: today(),
     taskFilter: 'todo',
@@ -283,12 +315,17 @@
     return 'RRULE:' + freq + (e.repeat_until ? `;UNTIL=${compact(e.repeat_until)}${e.start_time ? 'T235959' : ''}` : '');
   }
   const icsText = (v) => String(v || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
-  function buildIcs(e) {
-    const t = eventTimes(e);
+  function buildIcs(list) {
+    const events = Array.isArray(list) ? list : [list];
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
     const url = location.origin + location.pathname;
-    const lines = [
-      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Family Events//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+    const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Family Events//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+      `X-WR-CALNAME:${icsText(CFG.familyName || 'Family Events')}`, ...events.flatMap((e) => veventLines(e, stamp, url)), 'END:VCALENDAR'];
+    return lines.filter(Boolean).join('\r\n') + '\r\n';
+  }
+  function veventLines(e, stamp, url) {
+    const t = eventTimes(e);
+    return [
       'BEGIN:VEVENT',
       `UID:${e.id}@family-events`,
       `DTSTAMP:${stamp}`,
@@ -301,16 +338,15 @@
       `URL:${url}`,
       'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${icsText(e.title)}`, t.allDay ? 'TRIGGER:-PT15H' : 'TRIGGER:-P1D', 'END:VALARM',
       t.allDay ? '' : ['BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${icsText(e.title)}`, 'TRIGGER:-PT2H', 'END:VALARM'].join('\r\n'),
-      'END:VEVENT', 'END:VCALENDAR',
+      'END:VEVENT',
     ];
-    return lines.filter(Boolean).join('\r\n') + '\r\n';
   }
-  function downloadIcs(e) {
-    if (!e) return;
+  function downloadIcs(e, filename) {
+    if (!e || (Array.isArray(e) && !e.length)) return;
     const blob = new Blob([buildIcs(e)], { type: 'text/calendar;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `${e.title.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-').slice(0, 40) || 'event'}.ics`;
+    a.download = filename || `${e.title.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-').slice(0, 40) || 'event'}.ics`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
     toast('Open the downloaded file to add it to your calendar');
@@ -330,7 +366,9 @@
     const evs = [...eventsOn(t).map((e) => ({ e, when: 'Today' })), ...eventsOn(tm).filter((e) => e.start_date === tm).map((e) => ({ e, when: 'Tomorrow' }))];
     const tasks = state.tasks.filter((x) => !x.done && x.due_date && x.due_date <= tm && (x.assigned_to === state.me.email || !x.assigned_to))
       .sort((a, b) => a.due_date.localeCompare(b.due_date));
-    if (!evs.length && !tasks.length) return '';
+    const wk = mondayOf(t);
+    const chores = state.chores.filter((c) => choreWho(c, wk) === state.me.email && !choreDone(c.id, wk));
+    if (!evs.length && !tasks.length && !chores.length) return '';
     const evRows = evs.map(({ e, when }) => {
       const mine = myRsvp(e.id, e.occ);
       return `<button class="rem" data-act="open-event" data-id="${esc(e.id)}" data-occ="${esc(e.occ)}">
@@ -339,7 +377,9 @@
     }).join('');
     const taskRows = tasks.map((x) => `<button class="rem" data-act="edit-task" data-id="${esc(x.id)}">
         <span class="rem-when ${x.due_date < t ? 'overdue' : ''}">${x.due_date < t ? 'Overdue' : x.due_date === t ? 'Due today' : 'Due tomorrow'}</span><span class="rem-what">${esc(x.title)}</span></button>`).join('');
-    return `<div class="reminders card"><div class="rem-head">🔔 Coming up</div>${evRows}${taskRows}</div>`;
+    const choreRows = chores.map((c) => `<a class="rem" href="#chores" style="color:inherit;text-decoration:none">
+        <span class="rem-when">Your chore</span><span class="rem-what">${esc(c.title)} · this week</span></a>`).join('');
+    return `<div class="reminders card"><div class="rem-head">🔔 Coming up</div>${evRows}${taskRows}${choreRows}</div>`;
   }
 
   function whenText(e) {
@@ -389,7 +429,7 @@
     document.title = `${CFG.familyName || 'Family'} · Events`;
     $('#tabs').hidden = !ready;
     $('#fab').hidden = !ready || v === 'family';
-    $('#fab').setAttribute('aria-label', v === 'tasks' ? 'Add a task' : 'Add an event');
+    $('#fab').setAttribute('aria-label', v === 'tasks' ? 'Add a task' : v === 'chores' ? 'Add a chore' : 'Add an event');
     document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === v));
     $('#topbar-right').innerHTML = ready ? avatar(state.me.email) : '';
     $('#banner').innerHTML = store && store.demo && ready
@@ -401,7 +441,7 @@
     if (state.phase === 'signin') { el.innerHTML = signInView(); return; }
     if (state.phase === 'sent') { el.innerHTML = sentView(); return; }
     if (state.phase === 'notmember') { el.innerHTML = notMemberView(); return; }
-    el.innerHTML = ({ calendar: calendarView, upcoming: upcomingView, tasks: tasksView, family: familyView }[v] || calendarView)();
+    el.innerHTML = ({ calendar: calendarView, upcoming: upcomingView, tasks: tasksView, chores: choresView, family: familyView }[v] || calendarView)();
   }
 
   function signInView() {
@@ -521,7 +561,7 @@
         </span>
       </button>`;
     }).join('');
-    return `<h2>Upcoming</h2>
+    return `<div class="cal-head"><h2 style="margin:0">Upcoming</h2><button class="btn small" data-act="add-all-calendar">📅 Add all to my calendar</button></div>
       ${needReply ? `<div class="banner"><span>👋 ${needReply} event${needReply > 1 ? 's need' : ' needs'} your RSVP.</span></div>` : ''}
       <div class="list">${items}</div>`;
   }
@@ -565,6 +605,85 @@
       </form>
       <div class="seg" role="tablist">${seg}</div>
       ${list.length ? `<div class="tasks">${list.map((t) => taskRow(t)).join('')}</div>` : `<div class="empty"><span class="big">✨</span>${empty}</div>`}`;
+  }
+
+  // ---------- Chores roster ----------
+  // Each chore has a rotation (list of people). On the week starting start_week the first person
+  // does it, the next week the second person, and so on, wrapping round.
+  function choreRotation(c) { return (c.rotation || []).filter((e) => memberBy(e)); }
+  function choreWho(c, week) {
+    const rot = choreRotation(c);
+    if (!rot.length) return null;
+    const n = Math.floor(daysBetween(c.start_week, week) / 7);
+    return rot[((n % rot.length) + rot.length) % rot.length];
+  }
+  const choreDone = (id, week) => state.chore_done.find((d) => d.chore_id === id && d.week === week);
+  function weekLabel(week) {
+    const thisWeek = mondayOf(today());
+    const range = `${fmtDate(week, { day: 'numeric', month: 'short' })} – ${fmtDate(addDays(week, 6), { day: 'numeric', month: 'short' })}`;
+    const rel = week === thisWeek ? 'This week' : week === addDays(thisWeek, 7) ? 'Next week' : week === addDays(thisWeek, -7) ? 'Last week' : '';
+    return { rel, range };
+  }
+
+  function choresView() {
+    if (state.choresMissing) return `<h2>Chores</h2><div class="empty"><span class="big">🧹</span>The chores roster needs a quick database update.<br>Ask whoever set up the app to run the latest <b>schema.sql</b> in Supabase.</div>`;
+    const week = state.week || mondayOf(today());
+    const { rel, range } = weekLabel(week);
+    const chores = [...state.chores].sort((a, b) => a.title.localeCompare(b.title));
+    const head = `<div class="cal-head"><div><h2 style="margin:0">Chores</h2><div class="ev-meta">${esc(rel ? `${rel} · ${range}` : range)}</div></div>
+      <div class="cal-nav">
+        ${week !== mondayOf(today()) ? '<button class="btn small" data-act="chore-week" data-dir="0">This week</button>' : ''}
+        <button class="iconbtn" data-act="chore-week" data-dir="-1" aria-label="Previous week">‹</button>
+        <button class="iconbtn" data-act="chore-week" data-dir="1" aria-label="Next week">›</button>
+      </div></div>`;
+    if (!chores.length) return `${head}<div class="empty"><span class="big">🧹</span>No chores yet. Add one and pick who takes turns.<br><button class="btn primary small" style="margin-top:12px" data-act="new-chore">Add a chore</button></div>`;
+    const rows = chores.map((c) => {
+      const who = choreWho(c, week);
+      const done = choreDone(c.id, week);
+      const next = choreWho(c, addDays(week, 7));
+      return `<div class="task${done ? ' done' : ''}">
+        <input type="checkbox" data-act="toggle-chore" data-id="${esc(c.id)}" data-week="${week}" ${done ? 'checked' : ''} aria-label="Mark “${esc(c.title)}” done for this week">
+        <div class="t-body" data-act="edit-chore" data-id="${esc(c.id)}" role="button" tabindex="0">
+          <div class="t-title">${esc(c.title)}</div>
+          <div class="t-meta">
+            ${who ? `<span style="display:inline-flex;align-items:center;gap:4px">${avatar(who)}<b>${esc(who === state.me.email ? 'You' : nameOf(who))}</b></span>` : '<span>No one in the rotation</span>'}
+            ${done ? `<span>✓ Done${done.done_by && done.done_by !== who ? ` by ${esc(nameOf(done.done_by))}` : ''}</span>` : ''}
+            ${next && next !== who ? `<span>Next: ${esc(next === state.me.email ? 'you' : nameOf(next))}</span>` : ''}
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+    // Roster: who does what over the next 4 weeks
+    const weeks = [0, 1, 2, 3].map((i) => addDays(week, i * 7));
+    const grid = `<div class="roster-wrap"><table class="roster"><thead><tr><th>Chore</th>${weeks.map((w) => `<th>${esc(fmtDate(w, { day: 'numeric', month: 'short' }))}</th>`).join('')}</tr></thead>
+      <tbody>${chores.map((c) => `<tr><td>${esc(c.title)}</td>${weeks.map((w) => { const p = choreWho(c, w); return `<td>${p ? `${avatar(p)}<span class="rn">${esc(nameOf(p))}</span>` : '–'}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div>`;
+    const mine = chores.filter((c) => choreWho(c, week) === state.me.email && !choreDone(c.id, week)).length;
+    return `${head}
+      ${mine ? `<div class="banner"><span>🧽 You have ${mine} chore${mine > 1 ? 's' : ''} to do ${rel === 'This week' ? 'this week' : 'that week'}.</span></div>` : ''}
+      <div class="tasks">${rows}</div>
+      <h3>Who's on what</h3>${grid}
+      <p class="ev-meta">Jobs swap to the next person every Monday.</p>`;
+  }
+
+  function openChoreForm(id) {
+    const c = id ? state.chores.find((x) => x.id === id) : { title: '', rotation: state.members.map((m) => m.email), notes: '' };
+    if (!c) return;
+    const week = mondayOf(today());
+    const current = id ? choreWho(c, week) : state.me.email;
+    const members = [...state.members].sort((a, b) => a.name.localeCompare(b.name));
+    openSheet(() => `${sheetHead(id ? 'Edit chore' : 'New chore')}
+      <form data-form="chore" data-id="${esc(id || '')}">
+        <label class="field"><span>Chore</span><input type="text" name="title" required maxlength="100" value="${esc(c.title)}" placeholder="e.g. Take out the bins" autofocus></label>
+        <div class="field"><span style="display:block;font-size:.85rem;color:var(--muted);margin-bottom:6px;font-weight:600">Who takes turns?</span>
+          <div class="people">${members.map((m) => `<label class="person" style="cursor:pointer;padding-right:12px">
+            <input type="checkbox" name="rot" value="${esc(m.email)}" ${c.rotation.includes(m.email) ? 'checked' : ''} style="accent-color:var(--accent)">${avatar(m.email)}${esc(m.name)}</label>`).join('')}</div></div>
+        <label class="field"><span>Whose turn is it this week?</span><select name="first">${members.map((m) =>
+          `<option value="${esc(m.email)}" ${m.email === current ? 'selected' : ''}>${esc(m.name)}${m.email === state.me.email ? ' (me)' : ''}</option>`).join('')}</select></label>
+        <label class="field"><span>Notes (optional)</span><input type="text" name="notes" maxlength="300" value="${esc(c.notes || '')}" placeholder="e.g. Bins go out Thursday night"></label>
+        <p class="ev-meta" style="margin:-4px 0 12px">It moves to the next person (in the order above) every Monday.</p>
+        <div class="sheet-actions"><button class="btn primary" type="submit">${id ? 'Save' : 'Add chore'}</button><button class="btn" type="button" data-act="close">Cancel</button>
+          <span class="spacer"></span>${id ? `<button class="btn danger" type="button" data-act="delete-chore" data-id="${esc(id)}">Delete</button>` : ''}</div>
+      </form>`);
   }
 
   function familyView() {
@@ -691,11 +810,12 @@
           ${noReply.length ? `<div class="who-row"><span class="lbl">⏳ No reply</span><div class="people">${noReply.map((m) => `<span class="person">${avatar(m.email)}${esc(m.name)}</span>`).join('')}</div></div>` : ''}
         </div>
 
-        <h3>Reminders</h3>
-        <p class="ev-meta" style="margin:0 0 8px">Add it to your phone's calendar to get an alert ${e.start_time ? 'the day before and 2 hours before' : 'at 9am the day before'}.${repeats(e) ? ' Every date is added.' : ''}</p>
-        <div class="sheet-actions" style="margin-top:0">
-          <button class="btn" data-act="add-calendar" data-id="${esc(id)}">📅 Add to my calendar</button>
-          <a class="btn" href="${esc(googleCalendarUrl(series))}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;display:inline-flex;align-items:center">Google Calendar</a>
+        <h3>Add to your calendar</h3>
+        <p class="ev-meta" style="margin:0 0 8px">Get an alert ${e.start_time ? 'the day before and 2 hours before' : 'at 9am the day before'}.${repeats(e) ? ' Every date is added.' : ''}</p>
+        <div class="sheet-actions cal-buttons" style="margin-top:0">
+          <button class="btn" data-act="add-calendar" data-id="${esc(id)}">Apple Calendar</button>
+          <a class="btn" href="${esc(googleCalendarUrl(series))}" target="_blank" rel="noopener">Google Calendar</a>
+          <button class="btn" data-act="add-calendar" data-id="${esc(id)}">Outlook / other</button>
         </div>
 
         <h3>Tasks for this event</h3>
@@ -819,6 +939,20 @@
       catch (err) { toast('Could not copy automatically on this device.', true); }
     },
     'add-calendar': (el) => downloadIcs(eventBy(el.dataset.id)),
+    'add-all-calendar': () => openSheet(() => {
+      const t = today();
+      const list = state.events.filter((e) => nextOccurrence(e, t));
+      return `${sheetHead('Add all events to your calendar')}
+        <p>This adds the ${list.length} upcoming event${list.length === 1 ? '' : 's'} (with their repeats) to your phone or computer calendar, with alerts.</p>
+        <p class="ev-meta"><b>iPhone, iPad or Mac:</b> tap the button, then open the file and tap <b>Add All</b>.<br>
+        <b>Google Calendar:</b> tap the button to save the file, then on a computer go to <a href="https://calendar.google.com/calendar/r/settings/export" target="_blank" rel="noopener">Google Calendar settings, Import</a> and choose it.<br>
+        Events added later won't appear automatically. Add those one at a time, or do this again.</p>
+        <div class="sheet-actions"><button class="btn primary" data-act="download-all">📅 Download calendar file</button><button class="btn" data-act="close">Close</button></div>`;
+    }),
+    'download-all': () => {
+      const list = state.events.filter((e) => nextOccurrence(e, today()));
+      downloadIcs(list, `${(CFG.familyName || 'family').replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-')}-events.ics`);
+    },
     rsvp: (el) => {
       const id = el.dataset.id, occ = el.dataset.occ, status = el.dataset.status;
       const mine = myRsvp(id, occ);
@@ -830,6 +964,14 @@
       if (t) run(() => store.saveTask({ ...t, done: el.checked }), el.checked ? 'Nice work! ✅' : null);
     },
     'edit-task': (el) => openTaskForm(el.dataset.id),
+    'new-chore': () => openChoreForm(null),
+    'edit-chore': (el) => openChoreForm(el.dataset.id),
+    'chore-week': (el) => { const d = Number(el.dataset.dir); state.week = d === 0 ? mondayOf(today()) : addDays(state.week || mondayOf(today()), d * 7); render(); },
+    'toggle-chore': (el) => run(() => store.setChoreDone(el.dataset.id, el.dataset.week, el.checked), el.checked ? 'Chore done! 🧽' : null),
+    'delete-chore': async (el) => {
+      const c = state.chores.find((x) => x.id === el.dataset.id);
+      if (c && (await askConfirm(`Delete the chore “${c.title}”?`, 'Delete chore'))) run(() => store.deleteChore(c.id), 'Chore deleted');
+    },
     'share-task': async (el) => {
       const t = state.tasks.find((x) => x.id === el.dataset.id);
       if (!t) return;
@@ -891,6 +1033,18 @@
         await refresh();
         openEvent(saved.id, saved.start_date);
       }, ev.id ? 'Event updated' : 'Event added');
+    },
+    chore: (f) => {
+      const title = f.title.value.trim();
+      // Rotation in name order, starting from whoever's turn it is this week.
+      const picked = [...f.querySelectorAll('[name=rot]:checked')].map((c) => c.value);
+      if (!title) return toast('Please give the chore a name', true);
+      if (!picked.length) return toast('Pick at least one person to take turns', true);
+      const first = picked.includes(f.first.value) ? f.first.value : picked[0];
+      const i = picked.indexOf(first);
+      const rotation = [...picked.slice(i), ...picked.slice(0, i)];
+      closeSheet();
+      run(() => store.saveChore({ id: f.dataset.id || undefined, title, rotation, start_week: mondayOf(today()), notes: clean(f.notes.value) }), f.dataset.id ? 'Chore updated' : 'Chore added');
     },
     task: (f) => {
       const t = {
@@ -958,7 +1112,12 @@
     const fn = forms[f.dataset.form];
     if (fn) fn(f);
   });
-  $('#fab').addEventListener('click', () => (view() === 'tasks' ? openTaskForm(null, state.taskFilter === 'mine' ? { assigned_to: state.me.email } : {}) : openEventForm(null)));
+  $('#fab').addEventListener('click', () => {
+    const v = view();
+    if (v === 'tasks') openTaskForm(null, state.taskFilter === 'mine' ? { assigned_to: state.me.email } : {});
+    else if (v === 'chores') openChoreForm(null);
+    else openEventForm(null);
+  });
   window.addEventListener('hashchange', () => { closeSheet(true); render(); window.scrollTo(0, 0); });
 
   // Keep everyone's view fresh without needing to reload.

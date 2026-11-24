@@ -269,6 +269,19 @@ input:focus, select:focus, textarea:focus, .btn:focus-visible, .iconbtn:focus-vi
 .rem-when.overdue { color: var(--no); }
 .rem-what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 
+/* Calendar buttons */
+.cal-buttons a.btn { text-decoration: none; color: inherit; display: inline-flex; align-items: center; }
+
+/* Chores roster grid */
+.roster-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.roster { border-collapse: collapse; width: 100%; font-size: .85rem; }
+.roster th, .roster td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.roster tr:last-child td { border-bottom: 0; }
+.roster th { color: var(--muted); font-weight: 600; font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; }
+.roster td:first-child { font-weight: 600; white-space: normal; min-width: 110px; }
+.roster .avatar { width: 22px; height: 22px; font-size: .65rem; vertical-align: middle; margin-right: 4px; }
+@media (max-width: 480px) { .roster .rn { display: none; } }
+
 /* Bottom tabs */
 .tabs {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
