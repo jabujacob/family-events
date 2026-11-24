@@ -33,6 +33,9 @@
     : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
   const initials = (name) => (name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
   const clean = (s) => { const v = String(s ?? '').trim(); return v === '' ? null : v; };
+  // Who can see a task: everyone (shared_with empty/null = null), or only the creator, the person
+  // it's assigned to and the people in shared_with. The database applies the same rule.
+  const canSee = (t, email) => t.shared_with == null || t.created_by === email || t.assigned_to === email || t.shared_with.includes(email);
 
   let toastTimer;
   function toast(msg, isErr) {
@@ -82,7 +85,10 @@
           { id: uid(), title: 'Make a salad', event_id: e1, assigned_to: 'aroha@example.com', due_date: null, done: false, created_by: ME },
           { id: uid(), title: 'Order the birthday cake', event_id: e2, assigned_to: 'aroha@example.com', due_date: addDays(t, 10), done: false, created_by: 'aroha@example.com' },
           { id: uid(), title: 'Book the bach', event_id: e3, assigned_to: 'sam@example.com', due_date: null, done: true, created_by: 'sam@example.com' },
-          { id: uid(), title: 'Renew passports', event_id: null, assigned_to: null, due_date: addDays(t, 30), done: false, created_by: ME },
+          { id: uid(), title: 'Renew passports', event_id: null, assigned_to: null, due_date: addDays(t, 30), done: false, created_by: ME, shared_with: ['aroha@example.com'] },
+          { id: uid(), title: 'Buy Christmas presents for the kids', event_id: null, assigned_to: ME, due_date: addDays(t, 20), done: false, created_by: ME, shared_with: [] },
+          { id: uid(), title: 'Fix the garden gate', event_id: null, assigned_to: 'sam@example.com', due_date: null, done: false, created_by: 'aroha@example.com', shared_with: null },
+          { id: uid(), title: "Aroha's surprise party plans", event_id: null, assigned_to: null, due_date: null, done: false, created_by: 'sam@example.com', shared_with: ['nana@example.com'] },
         ],
       };
     };
@@ -101,7 +107,7 @@
       async signIn() {},
       async signOut() { db = seed(); save(); },
       async ensureMember() { return copy(db.members.find((m) => m.email === ME)); },
-      async loadAll() { return copy(db); },
+      async loadAll() { const d = copy(db); d.tasks = d.tasks.filter((x) => canSee(x, ME)); return d; },
       async saveEvent(ev) { const row = { ...ev, id: ev.id || uid() }; if (!ev.id) row.created_by = ME; upsert(db.events, row); save(); return copy(row); },
       async deleteEvent(id) { db.events = db.events.filter((e) => e.id !== id); db.rsvps = db.rsvps.filter((r) => r.event_id !== id); db.tasks = db.tasks.filter((t) => t.event_id !== id); save(); },
       async setRsvp(event_id, on_date, status, note) {
@@ -132,7 +138,7 @@
     const email = () => (session && session.user && session.user.email ? session.user.email.toLowerCase() : null);
     const ok = ({ data, error }) => { if (error) throw error; return data; };
     const EVENT_FIELDS = ['id', 'title', 'start_date', 'end_date', 'start_time', 'end_time', 'location', 'notes', 'repeat', 'repeat_until'];
-    const TASK_FIELDS = ['id', 'title', 'event_id', 'assigned_to', 'due_date', 'done'];
+    const TASK_FIELDS = ['id', 'title', 'event_id', 'assigned_to', 'due_date', 'done', 'shared_with'];
     const pick = (o, keys) => Object.fromEntries(keys.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
 
     return {
@@ -520,6 +526,13 @@
       <div class="list">${items}</div>`;
   }
 
+  function visibilityText(t) {
+    if (t.shared_with == null) return '👥 Everyone';
+    const others = [...new Set([t.created_by, t.assigned_to, ...t.shared_with])].filter((e) => e && e !== state.me.email);
+    if (!others.length) return '🔒 Only you';
+    return '🔒 ' + (t.created_by === state.me.email ? 'You and ' : 'Shared with you and ') + others.map(nameOf).join(', ');
+  }
+
   function taskRow(t, showEvent = true) {
     const ev = t.event_id && eventBy(t.event_id);
     const overdue = !t.done && t.due_date && t.due_date < today();
@@ -531,6 +544,7 @@
           ${t.assigned_to ? `<span style="display:inline-flex;align-items:center;gap:4px">${avatar(t.assigned_to)}${esc(nameOf(t.assigned_to))}</span>` : '<span>Anyone</span>'}
           ${t.due_date ? `<span class="${overdue ? 'overdue' : ''}">Due ${esc(fmtDate(t.due_date))}</span>` : ''}
           ${showEvent && ev ? `<span>📅 ${esc(ev.title)}</span>` : ''}
+          ${t.shared_with != null ? `<span title="Not everyone can see this">${esc(visibilityText(t))}</span>` : ''}
         </div>
       </div>
     </div>`;
@@ -539,11 +553,11 @@
   function tasksView() {
     const f = state.taskFilter;
     let list = state.tasks.filter((t) => (f === 'done' ? t.done : !t.done));
-    if (f === 'mine') list = list.filter((t) => t.assigned_to === state.me.email);
+    if (f === 'mine') list = list.filter((t) => t.assigned_to === state.me.email || (t.created_by === state.me.email && t.shared_with != null && !t.assigned_to));
     list.sort((a, b) => (a.due_date || '9999').localeCompare(b.due_date || '9999') || a.title.localeCompare(b.title));
     const seg = [['todo', 'To do'], ['mine', 'Mine'], ['done', 'Done']]
       .map(([k, l]) => `<button class="${f === k ? 'on' : ''}" data-act="task-filter" data-f="${k}">${l}</button>`).join('');
-    const empty = { todo: 'All done! Nothing left to do.', mine: 'Nothing assigned to you.', done: 'No finished tasks yet.' }[f];
+    const empty = { todo: 'All done! Nothing left to do.', mine: 'Nothing assigned to you, and no private tasks.', done: 'No finished tasks yet.' }[f];
     return `<h2>Tasks</h2>
       <form class="quickadd" data-form="quick-task">
         <input type="text" name="title" placeholder="Add a task…" maxlength="300" aria-label="New task">
@@ -746,9 +760,31 @@
         </div>
         <label class="field"><span>For an event? (optional)</span><select name="event_id"><option value="">No event</option>${upcoming.map((e) =>
           `<option value="${esc(e.id)}" ${e.id === t.event_id ? 'selected' : ''}>${esc(e.title)} · ${esc(fmtDate(e.start_date))}</option>`).join('')}</select></label>
+        ${visibilityField(t, !id || t.created_by === state.me.email)}
         <div class="sheet-actions"><button class="btn primary" type="submit">${id ? 'Save' : 'Add task'}</button><button class="btn" type="button" data-act="close">Cancel</button>
+          ${id ? `<button class="btn" type="button" data-act="share-task" data-id="${esc(id)}">Share</button>` : ''}
           <span class="spacer"></span>${id ? `<button class="btn danger" type="button" data-act="delete-task" data-id="${esc(id)}">Delete</button>` : ''}</div>
-      </form>`);
+      </form>`, (root) => {
+      const sel = root.querySelector('[name=visibility]');
+      if (sel) sel.addEventListener('change', () => { root.querySelector('[data-people]').hidden = sel.value !== 'some'; });
+    });
+  }
+
+  // "Who can see this?" Only the person who created a task can change it.
+  function visibilityField(t, editable) {
+    if (!editable) return `<p class="ev-meta" style="margin:0 0 12px">${esc(visibilityText(t))}. Only ${esc(nameOf(t.created_by))} can change who sees this task.</p>`;
+    const mode = t.shared_with == null ? 'all' : t.shared_with.length ? 'some' : 'me';
+    const others = [...state.members].filter((m) => m.email !== state.me.email).sort((a, b) => a.name.localeCompare(b.name));
+    return `<label class="field"><span>Who can see this?</span><select name="visibility">
+        <option value="all" ${mode === 'all' ? 'selected' : ''}>Everyone in the family</option>
+        <option value="me" ${mode === 'me' ? 'selected' : ''}>Just me (private)</option>
+        <option value="some" ${mode === 'some' ? 'selected' : ''}>Me and people I choose</option>
+      </select></label>
+      <div class="field" data-people ${mode === 'some' ? '' : 'hidden'}>
+        <div class="people" style="margin-bottom:4px">${others.map((m) => `<label class="person" style="cursor:pointer;padding-right:12px">
+          <input type="checkbox" name="share" value="${esc(m.email)}" ${t.shared_with && t.shared_with.includes(m.email) ? 'checked' : ''} style="accent-color:var(--accent)">${avatar(m.email)}${esc(m.name)}</label>`).join('')}</div>
+        <p class="ev-meta" style="margin:4px 0 0">The person doing the task can always see it.</p>
+      </div>`;
   }
 
   // ---------- Actions ----------
@@ -794,6 +830,15 @@
       if (t) run(() => store.saveTask({ ...t, done: el.checked }), el.checked ? 'Nice work! ✅' : null);
     },
     'edit-task': (el) => openTaskForm(el.dataset.id),
+    'share-task': async (el) => {
+      const t = state.tasks.find((x) => x.id === el.dataset.id);
+      if (!t) return;
+      const ev = t.event_id && eventBy(t.event_id);
+      const text = [`✅ ${t.title}`, t.assigned_to ? `For: ${nameOf(t.assigned_to)}` : '', t.due_date ? `Due: ${fmtDate(t.due_date)}` : '', ev ? `For the event: ${ev.title}` : '',
+        `Open the family app: ${location.origin + location.pathname}#tasks`].filter(Boolean).join('\n');
+      try { if (navigator.share) { await navigator.share({ title: t.title, text }); return; } } catch (err) { if (err && err.name === 'AbortError') return; }
+      try { await navigator.clipboard.writeText(text); toast('Copied. Paste it into a message.'); } catch (err) { toast('Could not copy automatically on this device.', true); }
+    },
     'delete-task': (el) => { closeSheet(true); run(() => store.deleteTask(el.dataset.id), 'Task deleted'); },
     'task-filter': (el) => { state.taskFilter = el.dataset.f; render(); },
     'remove-member': async (el) => {
@@ -856,6 +901,11 @@
         due_date: clean(f.due_date.value),
         event_id: clean(f.event_id.value),
       };
+      if (f.visibility) {
+        const v = f.visibility.value;
+        t.shared_with = v === 'all' ? null : v === 'me' ? [] : [...f.querySelectorAll('[name=share]:checked')].map((c) => c.value);
+        if (v === 'some' && !t.shared_with.length) return toast('Pick at least one person to share with, or choose "Just me"', true);
+      }
       if (!t.title) return toast('Please describe the task', true);
       closeSheet();
       run(() => store.saveTask(t), f.dataset.id ? 'Task updated' : 'Task added');
